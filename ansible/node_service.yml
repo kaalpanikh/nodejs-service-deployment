@@ -1,0 +1,85 @@
+---
+- hosts: aws_servers
+  become: yes
+  vars:
+    app_dir: /opt/nodejs-service
+    domain_name: njs.nikhilmishra.live
+    node_version: 18
+
+  tasks:
+    - name: Add NodeSource repository
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_{{ node_version }}.x | sudo -E bash -
+      args:
+        creates: /etc/apt/sources.list.d/nodesource.list
+
+    - name: Install Node.js and npm
+      apt:
+        name: 
+          - nodejs
+          - git
+        state: present
+        update_cache: yes
+
+    - name: Install PM2 globally
+      npm:
+        name: pm2
+        global: yes
+        state: present
+
+    - name: Create app directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy application files
+      copy:
+        src: ../app/
+        dest: "{{ app_dir }}"
+        mode: '0755'
+
+    - name: Install npm dependencies
+      npm:
+        path: "{{ app_dir }}"
+        state: present
+
+    - name: Start application with PM2
+      shell: |
+        cd {{ app_dir }}
+        pm2 delete nodejs-service || true
+        PATH=$PATH:/usr/bin pm2 start ecosystem.config.js
+      become: yes
+      become_user: ubuntu
+
+    - name: Save PM2 process list and configure startup
+      shell: |
+        PATH=$PATH:/usr/bin pm2 save
+        sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu
+        sudo systemctl enable pm2-ubuntu
+      become: yes
+
+    - name: Configure Nginx reverse proxy
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/{{ domain_name }}
+      notify: restart nginx
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/{{ domain_name }}
+        dest: /etc/nginx/sites-enabled/{{ domain_name }}
+        state: link
+      notify: restart nginx
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+  handlers:
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
